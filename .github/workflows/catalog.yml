@@ -1,0 +1,45 @@
+name: Refresh plugin catalog
+
+on:
+  push:
+    paths:
+      - sources.json
+  schedule:
+    - cron: '7,22,37,52 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: plugin-catalog
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python generate.py
+      - name: Update pluginmaster.json
+        run: |
+          if git diff --quiet -- pluginmaster.json; then exit 0; fi
+          jq -n \
+            --arg repo "$GITHUB_REPOSITORY" \
+            --arg branch "$GITHUB_REF_NAME" \
+            --arg head "$(git rev-parse HEAD)" \
+            --arg content "$(base64 -w0 pluginmaster.json)" \
+            --arg query 'mutation($input: CreateCommitOnBranchInput!) {
+              createCommitOnBranch(input: $input) { commit { oid signature { isValid } } }
+            }' \
+            '{query: $query, variables: {input: {
+              branch: {repositoryNameWithOwner: $repo, branchName: $branch},
+              expectedHeadOid: $head,
+              message: {headline: "Refresh plugin catalog"},
+              fileChanges: {additions: [{path: "pluginmaster.json", contents: $content}]}
+            }}}' | gh api graphql --input - | jq -e '.data.createCommitOnBranch.commit.signature.isValid == true'
